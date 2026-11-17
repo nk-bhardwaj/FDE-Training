@@ -1,7 +1,6 @@
 import os
 import time
 
-from dotenv import load_dotenv
 from openai import (
     APIConnectionError,
     APIError,
@@ -12,6 +11,7 @@ from openai import (
 )
 
 from app.core.logging import get_logger
+from app.schemas.llm import LLMGeneration
 from app.services.llm_errors import (
     LLMProviderError,
     LLMTimeoutError,
@@ -23,7 +23,6 @@ logger = get_logger(__name__)
 
 class OpenAIService:
     def __init__(self, timeout: float | None = None) -> None:
-        load_dotenv()
         if timeout is None:
             raw_timeout = os.getenv("LLM_REQUEST_TIMEOUT", "30.0")
             try:
@@ -48,7 +47,7 @@ class OpenAIService:
         self,
         prompt: str,
         model: str = "gpt-4o-mini",
-    ) -> tuple[str, str, float, dict[str, int | None]]:
+    ) -> LLMGeneration:
         client = self._get_client()
         start = time.perf_counter()
 

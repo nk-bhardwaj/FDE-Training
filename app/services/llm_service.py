@@ -1,3 +1,4 @@
+from app.schemas.llm import LLMGeneration
 from app.services.anthropic_service import AnthropicService
 from app.services.groq_service import GroqService
 from app.services.openai_service import OpenAIService
@@ -13,14 +14,12 @@ class LLMService:
         self,
         provider: str,
         prompt: str,
-    ) -> str:
-        if provider == "openai":
-            return await self.openai.generate_response(prompt)
-
-        if provider == "anthropic":
-            return await self.anthropic.generate_response(prompt)
-
-        if provider == "groq":
-            return await self.groq.generate_response(prompt)
-
-        raise ValueError(f"Unsupported provider: {provider}")
+    ) -> LLMGeneration:
+        service = {
+            "openai": self.openai,
+            "anthropic": self.anthropic,
+            "groq": self.groq,
+        }.get(provider)
+        if service is None:
+            raise ValueError(f"Unsupported provider: {provider}")
+        return await service.generate_response(prompt)

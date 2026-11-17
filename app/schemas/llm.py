@@ -2,9 +2,12 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+ProviderName = Literal["openai", "anthropic", "groq"]
+LLMGeneration = tuple[str, str, float, dict[str, int | None]]
+
 
 class LLMRequest(BaseModel):
-    provider: Literal["openai", "anthropic", "groq"]
+    provider: ProviderName
     prompt: str = Field(min_length=1, max_length=10000)
 
 
@@ -15,7 +18,7 @@ class TokenUsage(BaseModel):
 
 
 class LLMResponse(BaseModel):
-    provider: str
+    provider: ProviderName
     response: str
     model: str
     latency_ms: float

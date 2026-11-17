@@ -1,7 +1,6 @@
 import os
 import time
 
-from dotenv import load_dotenv
 from groq import (
     APIConnectionError,
     APIError,
@@ -12,6 +11,7 @@ from groq import (
 )
 
 from app.core.logging import get_logger
+from app.schemas.llm import LLMGeneration
 from app.services.llm_errors import (
     LLMProviderError,
     LLMTimeoutError,
@@ -23,7 +23,6 @@ logger = get_logger(__name__)
 
 class GroqService:
     def __init__(self, timeout: float | None = None) -> None:
-        load_dotenv()
         if timeout is None:
             raw_timeout = os.getenv("LLM_REQUEST_TIMEOUT", "30.0")
             try:
@@ -48,7 +47,7 @@ class GroqService:
         self,
         prompt: str,
         model: str = "openai/gpt-oss-120b",
-    ) -> tuple[str, str, float, dict[str, int | None]]:
+    ) -> LLMGeneration:
         client = self._get_client()
         start = time.perf_counter()
 
@@ -116,15 +115,12 @@ class GroqService:
             raise LLMProviderError("Groq service is unavailable", status_code=502) from exc
         except APIError as exc:
             latency_ms = (time.perf_counter() - start) * 1000
-            logger.exception(
-                "Groq API error: status=%s message=%s",
-                getattr(exc, "status_code", None),
-                str(exc),
+            logger.warning(
+                "provider=%s status=failure latency_ms=%.2f reason=provider_error",
+                "groq",
+                latency_ms,
             )
-            raise LLMProviderError(
-                "Groq request failed",
-                status_code=getattr(exc, "status_code", 502),
-            ) from exc
+            raise LLMProviderError("Groq request failed", status_code=502) from exc
         except Exception as exc:
             latency_ms = (time.perf_counter() - start) * 1000
             logger.exception(
