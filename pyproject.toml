@@ -34,6 +34,10 @@ dependencies = [
 fde-ai = "app.main:main"
 dev = "app.cli:dev"
 start = "app.cli:start"
+lint = "app.cli:lint"
+format = "app.cli:format_code"
+format-check = "app.cli:format_check"
+test = "app.cli:test"
 
 [dependency-groups]
 dev = [
