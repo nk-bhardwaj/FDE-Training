@@ -1,6 +1,9 @@
 import os
 import time
+from collections.abc import AsyncGenerator
+from typing import Any
 
+from dotenv import load_dotenv
 from groq import (
     APIConnectionError,
     APIError,
@@ -17,8 +20,15 @@ from app.services.llm_errors import (
     LLMTimeoutError,
     MissingAPIKeyError,
 )
+from app.tools.orchestrator import (
+    ToolCall,
+    ToolTurn,
+    run_tool_calling,
+)
 
 logger = get_logger(__name__)
+
+load_dotenv()
 
 
 class GroqService:
@@ -32,6 +42,7 @@ class GroqService:
             if timeout <= 0:
                 raise ValueError("LLM_REQUEST_TIMEOUT must be a positive number")
         self.timeout = timeout
+        self.model: str = "openai/gpt-oss-120b"
         self._client: AsyncGroq | None = None
 
     def _get_client(self) -> AsyncGroq:
@@ -47,14 +58,20 @@ class GroqService:
         self,
         prompt: str,
         model: str = "openai/gpt-oss-120b",
+        system_prompt: str | None = None,
     ) -> LLMGeneration:
         client = self._get_client()
         start = time.perf_counter()
 
+        messages: list[dict[str, Any]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
         try:
             response = await client.chat.completions.create(
                 model=model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=messages,
             )
             latency_ms = (time.perf_counter() - start) * 1000
             usage = getattr(response, "usage", None)
@@ -115,12 +132,15 @@ class GroqService:
             raise LLMProviderError("Groq service is unavailable", status_code=502) from exc
         except APIError as exc:
             latency_ms = (time.perf_counter() - start) * 1000
-            logger.warning(
-                "provider=%s status=failure latency_ms=%.2f reason=provider_error",
-                "groq",
-                latency_ms,
+            logger.exception(
+                "Groq API error: status=%s message=%s",
+                getattr(exc, "status_code", None),
+                str(exc),
             )
-            raise LLMProviderError("Groq request failed", status_code=502) from exc
+            raise LLMProviderError(
+                "Groq request failed",
+                status_code=getattr(exc, "status_code", 502),
+            ) from exc
         except Exception as exc:
             latency_ms = (time.perf_counter() - start) * 1000
             logger.exception(
@@ -129,3 +149,265 @@ class GroqService:
                 latency_ms,
             )
             raise LLMProviderError("Groq request failed", status_code=502) from exc
+
+    async def generate_stream(
+        self,
+        prompt: str,
+        model: str = "openai/gpt-oss-120b",
+        system_prompt: str | None = None,
+    ) -> AsyncGenerator[tuple[str, dict[str, int | None] | None, str]]:
+        """Stream response from Groq. Yields (chunk_text, usage_dict_or_None, model)."""
+        client = self._get_client()
+        start = time.perf_counter()
+        accumulated_text = ""
+        usage: dict[str, int | None] = {
+            "input_tokens": None,
+            "output_tokens": None,
+            "total_tokens": None,
+        }
+
+        messages: list[dict[str, Any]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        try:
+            stream = await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                stream=True,
+            )
+            async for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    content = chunk.choices[0].delta.content
+                    accumulated_text += content
+                    yield content, None, model
+                x_groq_usage = getattr(chunk, "x_groq", None)
+                if x_groq_usage is not None and getattr(x_groq_usage, "usage", None) is not None:
+                    usage = {
+                        "input_tokens": getattr(x_groq_usage.usage, "prompt_tokens", None),
+                        "output_tokens": getattr(x_groq_usage.usage, "completion_tokens", None),
+                        "total_tokens": getattr(x_groq_usage.usage, "total_tokens", None),
+                    }
+            latency_ms = (time.perf_counter() - start) * 1000
+            logger.info(
+                "provider=%s model=%s status=success latency_ms=%.2f streaming_completed input_tokens=%s output_tokens=%s total_tokens=%s",
+                "groq",
+                model,
+                latency_ms,
+                usage["input_tokens"],
+                usage["output_tokens"],
+                usage["total_tokens"],
+            )
+            yield "", usage, model
+        except AuthenticationError as exc:
+            latency_ms = (time.perf_counter() - start) * 1000
+            logger.warning(
+                "provider=%s status=failure latency_ms=%.2f reason=authentication",
+                "groq",
+                latency_ms,
+            )
+            raise LLMProviderError("Groq authentication failed", status_code=502) from exc
+        except RateLimitError as exc:
+            latency_ms = (time.perf_counter() - start) * 1000
+            logger.warning(
+                "provider=%s status=failure latency_ms=%.2f reason=rate_limit",
+                "groq",
+                latency_ms,
+            )
+            raise LLMProviderError("Groq rate limit exceeded", status_code=429) from exc
+        except (APITimeoutError, TimeoutError) as exc:
+            latency_ms = (time.perf_counter() - start) * 1000
+            logger.warning(
+                "provider=%s status=failure latency_ms=%.2f reason=timeout",
+                "groq",
+                latency_ms,
+            )
+            raise LLMTimeoutError("Groq request timed out") from exc
+        except APIConnectionError as exc:
+            latency_ms = (time.perf_counter() - start) * 1000
+            logger.warning(
+                "provider=%s status=failure latency_ms=%.2f reason=connection",
+                "groq",
+                latency_ms,
+            )
+            raise LLMProviderError("Groq service is unavailable", status_code=502) from exc
+        except APIError as exc:
+            latency_ms = (time.perf_counter() - start) * 1000
+            logger.exception(
+                "Groq API error: status=%s message=%s",
+                getattr(exc, "status_code", None),
+                str(exc),
+            )
+            raise LLMProviderError(
+                "Groq request failed",
+                status_code=getattr(exc, "status_code", 502),
+            ) from exc
+        except Exception as exc:
+            latency_ms = (time.perf_counter() - start) * 1000
+            logger.exception(
+                "provider=%s status=failure latency_ms=%.2f reason=unexpected",
+                "groq",
+                latency_ms,
+            )
+            raise LLMProviderError("Groq request failed", status_code=502) from exc
+
+    @property
+    def provider_name(self) -> str:
+        return "groq"
+
+    def format_tools(self, tool_definitions: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": definition.get("name") or key,
+                    "description": definition.get("description") or "",
+                    "parameters": definition.get("parameters")
+                    or {
+                        "type": "object",
+                        "properties": {},
+                    },
+                },
+            }
+            for key, definition in tool_definitions.items()
+        ]
+
+    async def send_tool_request(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        model: str,
+    ) -> ToolTurn:
+        client = self._get_client()
+        start = time.perf_counter()
+        try:
+            response = await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=tools,
+            )
+            latency_ms = (time.perf_counter() - start) * 1000
+            usage = getattr(response, "usage", None)
+            input_tokens = getattr(usage, "prompt_tokens", None) if usage else None
+            output_tokens = getattr(usage, "completion_tokens", None) if usage else None
+            total_tokens = getattr(usage, "total_tokens", None) if usage else None
+            usage_dict = {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": total_tokens,
+            }
+            content = response.choices[0].message.content or ""
+            tool_calls: list[ToolCall] = []
+            for tool_call in response.choices[0].message.tool_calls or []:
+                tool_calls.append(
+                    ToolCall(
+                        id=tool_call.id,
+                        name=tool_call.function.name,
+                        arguments=tool_call.function.arguments or "{}",
+                    )
+                )
+            logger.info(
+                "provider=%s model=%s status=success latency_ms=%.2f input_tokens=%s output_tokens=%s total_tokens=%s",
+                "groq",
+                model,
+                latency_ms,
+                usage_dict["input_tokens"],
+                usage_dict["output_tokens"],
+                usage_dict["total_tokens"],
+            )
+            return ToolTurn(
+                content=content,
+                tool_calls=tool_calls,
+                usage=usage_dict,
+            )
+        except AuthenticationError as exc:
+            latency_ms = (time.perf_counter() - start) * 1000
+            logger.warning(
+                "provider=%s status=failure latency_ms=%.2f reason=authentication",
+                "groq",
+                latency_ms,
+            )
+            raise LLMProviderError("Groq authentication failed", status_code=502) from exc
+        except RateLimitError as exc:
+            latency_ms = (time.perf_counter() - start) * 1000
+            logger.warning(
+                "provider=%s status=failure latency_ms=%.2f reason=rate_limit",
+                "groq",
+                latency_ms,
+            )
+            raise LLMProviderError("Groq rate limit exceeded", status_code=429) from exc
+        except (APITimeoutError, TimeoutError) as exc:
+            latency_ms = (time.perf_counter() - start) * 1000
+            logger.warning(
+                "provider=%s status=failure latency_ms=%.2f reason=timeout",
+                "groq",
+                latency_ms,
+            )
+            raise LLMTimeoutError("Groq request timed out") from exc
+        except APIConnectionError as exc:
+            latency_ms = (time.perf_counter() - start) * 1000
+            logger.warning(
+                "provider=%s status=failure latency_ms=%.2f reason=connection",
+                "groq",
+                latency_ms,
+            )
+            raise LLMProviderError("Groq service is unavailable", status_code=502) from exc
+        except APIError as exc:
+            latency_ms = (time.perf_counter() - start) * 1000
+            logger.exception(
+                "Groq API error: status=%s message=%s",
+                getattr(exc, "status_code", None),
+                str(exc),
+            )
+            raise LLMProviderError(
+                "Groq request failed",
+                status_code=getattr(exc, "status_code", 502),
+            ) from exc
+        except Exception as exc:
+            latency_ms = (time.perf_counter() - start) * 1000
+            logger.exception(
+                "provider=%s status=failure latency_ms=%.2f reason=unexpected",
+                "groq",
+                latency_ms,
+            )
+            raise LLMProviderError("Groq request failed", status_code=502) from exc
+
+    def append_assistant_message(self, messages: list[dict[str, Any]], turn: ToolTurn) -> None:
+        message: dict[str, Any] = {"role": "assistant", "content": turn.content or ""}
+        if turn.tool_calls:
+            message["tool_calls"] = [
+                {
+                    "id": tool_call.id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_call.name,
+                        "arguments": tool_call.arguments,
+                    },
+                }
+                for tool_call in turn.tool_calls
+            ]
+        messages.append(message)
+
+    def append_tool_result(
+        self, messages: list[dict[str, Any]], tool_call: ToolCall, content: str
+    ) -> None:
+        messages.append(
+            {
+                "role": "tool",
+                "content": content,
+                "tool_call_id": tool_call.id,
+            }
+        )
+
+    async def generate_with_tools(
+        self,
+        prompt: str,
+        tool_definitions: dict[str, dict[str, Any]],
+        system_prompt: str | None = None,
+    ) -> LLMGeneration:
+        messages: list[dict[str, Any]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        return await run_tool_calling(self, messages, tool_definitions, model=self.model)
