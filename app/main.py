@@ -1,3 +1,7 @@
+"""Application entry point with Windows-compatible event loop."""
+
+import asyncio
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -50,6 +54,9 @@ async def custom_swagger_ui():
 
 def main() -> None:
     import uvicorn
+
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     uvicorn.run(app, host="0.0.0.0", port=8000)
 
