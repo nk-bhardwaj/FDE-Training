@@ -12,3 +12,10 @@ class LLMProviderError(Exception):
     def __init__(self, message: str, status_code: int = 502) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+class ToolCallLimitError(LLMProviderError):
+    """Raised when the tool-calling loop exceeds the iteration limit."""
+
+    def __init__(self, message: str = "Exceeded maximum tool-calling iterations") -> None:
+        super().__init__(message, status_code=502)
