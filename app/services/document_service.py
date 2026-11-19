@@ -62,6 +62,17 @@ class SearchResult:
     similarity: float = 0.0
 
 
+@dataclass(frozen=True)
+class KeywordSearchResult:
+    """A single keyword search hit ordered by full-text rank."""
+
+    id: int
+    content: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime | None = None
+    rank: float = 0.0
+
+
 class DocumentService:
     """Stores documents and runs pgvector cosine-similarity search."""
 
@@ -199,6 +210,72 @@ class DocumentService:
         latency_ms = (time.perf_counter() - start) * 1000
         logger.info(
             "store=documents operation=search status=success latency_ms=%.2f results=%d limit=%d filtered=%s",
+            latency_ms,
+            len(results),
+            limit,
+            bool(metadata_filters),
+        )
+        return results
+
+    async def keyword_search(
+        self,
+        query: str,
+        limit: int = 5,
+        metadata_filters: dict[str, Any] | None = None,
+    ) -> list[KeywordSearchResult]:
+        """Return documents ordered by PostgreSQL full-text search rank."""
+        if not query or not query.strip():
+            raise ValueError("Search query must not be empty")
+        if limit <= 0:
+            raise ValueError("Search limit must be a positive integer")
+        if limit > MAX_SEARCH_LIMIT:
+            raise ValueError(f"Search limit must not exceed {MAX_SEARCH_LIMIT}")
+
+        params: dict[str, Any] = {"query": query, "limit": limit}
+        sql = """
+            SELECT
+                id,
+                content,
+                metadata,
+                created_at,
+                ts_rank(tsvector_content, websearch_to_tsquery('english', %(query)s)) AS rank
+            FROM documents
+            WHERE tsvector_content @@ websearch_to_tsquery('english', %(query)s)
+        """
+        if metadata_filters:
+            sql += " AND metadata @> %(filters)s"
+            params["filters"] = Jsonb(dict(metadata_filters))
+        sql += " ORDER BY rank DESC LIMIT %(limit)s"
+
+        start = time.perf_counter()
+        try:
+            async with self._connect() as conn, conn.cursor() as cur:
+                await cur.execute(sql, params)
+                rows = await cur.fetchall()
+        except DocumentStoreError:
+            raise
+        except psycopg.Error as exc:
+            latency_ms = (time.perf_counter() - start) * 1000
+            logger.warning(
+                "store=documents operation=keyword_search status=failure latency_ms=%.2f reason=database_error",
+                latency_ms,
+            )
+            raise DocumentStoreError("Failed to search documents") from exc
+
+        results = [
+            KeywordSearchResult(
+                id=int(row["id"]),
+                content=row["content"],
+                metadata=row["metadata"] or {},
+                created_at=row["created_at"],
+                rank=float(row["rank"]),
+            )
+            for row in rows
+        ]
+
+        latency_ms = (time.perf_counter() - start) * 1000
+        logger.info(
+            "store=documents operation=keyword_search status=success latency_ms=%.2f results=%d limit=%d filtered=%s",
             latency_ms,
             len(results),
             limit,

@@ -1,9 +1,12 @@
-"""API routes for document semantic search."""
+"""API routes for document semantic and keyword search."""
 
 from fastapi import APIRouter, HTTPException
 
 from app.core.logging import get_logger
 from app.schemas.documents import (
+    KeywordSearchRequest,
+    KeywordSearchResponse,
+    KeywordSearchResultResponse,
     SearchResultResponse,
     SemanticSearchRequest,
     SemanticSearchResponse,
@@ -75,3 +78,49 @@ async def semantic_search(request: SemanticSearchRequest) -> SemanticSearchRespo
     except Exception:
         logger.exception("Semantic search failed status=502 reason=unexpected")
         raise HTTPException(status_code=502, detail="Semantic search request failed") from None
+
+
+@router.post("/keyword-search", response_model=KeywordSearchResponse)
+async def keyword_search(request: KeywordSearchRequest) -> KeywordSearchResponse:
+    """Perform keyword search using PostgreSQL full-text search."""
+    logger.info(
+        "Received keyword search request query_length=%d limit=%d",
+        len(request.query),
+        request.limit,
+    )
+
+    try:
+        results = await document_service.keyword_search(
+            query=request.query,
+            limit=request.limit,
+            metadata_filters=request.metadata_filters,
+        )
+
+        logger.info("Keyword search completed results=%d", len(results))
+        return KeywordSearchResponse(
+            query=request.query,
+            results=[
+                KeywordSearchResultResponse(
+                    id=result.id,
+                    content=result.content,
+                    metadata=result.metadata,
+                    created_at=result.created_at,
+                    rank=result.rank,
+                )
+                for result in results
+            ],
+            total_results=len(results),
+        )
+
+    except DatabaseNotConfiguredError as exc:
+        logger.warning("Keyword search failed status=503 reason=database_not_configured")
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except DocumentStoreError as exc:
+        logger.warning("Keyword search failed status=502 reason=database_error")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except ValueError as exc:
+        logger.warning("Keyword search failed status=400 reason=invalid_request")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        logger.exception("Keyword search failed status=502 reason=unexpected")
+        raise HTTPException(status_code=502, detail="Keyword search request failed") from None
