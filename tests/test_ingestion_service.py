@@ -1,19 +1,24 @@
 """Tests for the ingestion service."""
 
+import asyncio
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.services.ingestion_service import (
+    EmbeddedChunk,
     IngestionError,
     LoadedDocument,
     _discover_markdown_files,
     _extract_document,
     _load_yaml_frontmatter,
     _read_markdown_file,
+    embed_document_chunks,
     load_all_documents,
     load_and_chunk,
 )
+from app.services.llm_errors import LLMProviderError
 
 
 class TestLoadYamlFrontmatter:
@@ -306,3 +311,127 @@ class TestLoadAllDocumentsCustomDirectory:
         docs = load_all_documents(tmp_path)
         assert len(docs) == 2
         assert [d.source_id for d in docs] == ["a", "b"]
+
+
+class TestEmbedDocumentChunks:
+    def test_empty_input_returns_empty_list(self):
+        result = asyncio.run(embed_document_chunks([]))
+        assert result == []
+
+    def test_one_chunk(self):
+        doc = LoadedDocument(
+            source_id="test",
+            title="Test Doc",
+            content="Short text.",
+            metadata={"source_id": "test", "title": "Test Doc"},
+        )
+        mock_embedding = [0.1] * 768
+        mock_service = MagicMock()
+        mock_service.embed_document = AsyncMock(return_value=mock_embedding)
+
+        result = asyncio.run(embed_document_chunks([doc], embedding_service=mock_service))
+        assert len(result) == 1
+        assert isinstance(result[0], EmbeddedChunk)
+        assert result[0].document.source_id == "test"
+        assert len(result[0].embedding) == 768
+
+    def test_multiple_chunks(self):
+        docs = [
+            LoadedDocument(
+                source_id="doc1",
+                title="Doc 1",
+                content="Content one.",
+                metadata={"source_id": "doc1", "title": "Doc 1"},
+            ),
+            LoadedDocument(
+                source_id="doc2",
+                title="Doc 2",
+                content="Content two.",
+                metadata={"source_id": "doc2", "title": "Doc 2"},
+            ),
+        ]
+        mock_embedding = [0.2] * 768
+        mock_service = MagicMock()
+        mock_service.embed_document = AsyncMock(return_value=mock_embedding)
+
+        result = asyncio.run(embed_document_chunks(docs, embedding_service=mock_service))
+        assert len(result) == 2
+        assert all(isinstance(c, EmbeddedChunk) for c in result)
+        assert result[0].document.source_id == "doc1"
+        assert result[1].document.source_id == "doc2"
+
+    def test_correct_embedding_dimensions(self):
+        doc = LoadedDocument(
+            source_id="test",
+            title="Test Doc",
+            content="Some content for embedding.",
+            metadata={"source_id": "test", "title": "Test Doc"},
+        )
+        mock_service = MagicMock()
+        mock_service.embed_document = AsyncMock(return_value=[0.5] * 768)
+
+        result = asyncio.run(embed_document_chunks([doc], embedding_service=mock_service))
+        assert len(result) == 1
+        assert len(result[0].embedding) == 768
+
+    def test_wrong_embedding_dimensions_raises(self):
+        doc = LoadedDocument(
+            source_id="test",
+            title="Test Doc",
+            content="Some content.",
+            metadata={"source_id": "test", "title": "Test Doc"},
+        )
+        mock_service = MagicMock()
+        mock_service.embed_document = AsyncMock(return_value=[0.5] * 100)
+
+        with pytest.raises(ValueError, match="Expected 768-dimensional"):
+            asyncio.run(embed_document_chunks([doc], embedding_service=mock_service))
+
+    def test_metadata_preserved(self):
+        doc = LoadedDocument(
+            source_id="test",
+            title="Test Doc",
+            category="returns_refunds",
+            content="Content here.",
+            metadata={
+                "source_id": "test",
+                "title": "Test Doc",
+                "category": "returns_refunds",
+                "custom_key": "custom_value",
+            },
+        )
+        mock_service = MagicMock()
+        mock_service.embed_document = AsyncMock(return_value=[0.3] * 768)
+
+        result = asyncio.run(embed_document_chunks([doc], embedding_service=mock_service))
+        assert result[0].document.category == "returns_refunds"
+        assert result[0].document.metadata["custom_key"] == "custom_value"
+
+    def test_dependency_injection(self):
+        doc = LoadedDocument(
+            source_id="test",
+            title="Test Doc",
+            content="Content.",
+            metadata={"source_id": "test", "title": "Test Doc"},
+        )
+        custom_service = MagicMock()
+        custom_service.embed_document = AsyncMock(return_value=[0.4] * 768)
+
+        result = asyncio.run(embed_document_chunks([doc], embedding_service=custom_service))
+        custom_service.embed_document.assert_called_once_with(doc.content)
+        assert len(result) == 1
+
+    def test_gemini_error_propagation(self):
+        doc = LoadedDocument(
+            source_id="test",
+            title="Test Doc",
+            content="Content.",
+            metadata={"source_id": "test", "title": "Test Doc"},
+        )
+        mock_service = MagicMock()
+        mock_service.embed_document = AsyncMock(
+            side_effect=LLMProviderError("Rate limit exceeded", status_code=429)
+        )
+
+        with pytest.raises(LLMProviderError, match="Rate limit exceeded"):
+            asyncio.run(embed_document_chunks([doc], embedding_service=mock_service))

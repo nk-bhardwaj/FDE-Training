@@ -20,6 +20,7 @@ from typing import Any
 import yaml
 
 from app.services.chunking_service import chunk_text
+from app.services.embedding_service import EmbeddingService
 
 
 @dataclass(frozen=True)
@@ -237,3 +238,53 @@ def load_and_chunk(
             chunks.append(chunk_doc)
 
     return chunks
+
+
+@dataclass(frozen=True)
+class EmbeddedChunk:
+    """A document chunk paired with its embedding vector."""
+
+    document: LoadedDocument
+    embedding: list[float]
+
+
+async def embed_document_chunks(
+    chunks: list[LoadedDocument],
+    embedding_service: EmbeddingService | None = None,
+) -> list[EmbeddedChunk]:
+    """Generate embeddings for a list of document chunks.
+
+    Parameters:
+        chunks: List of ``LoadedDocument`` instances to embed.
+        embedding_service: Optional :class:`EmbeddingService` instance for
+            dependency injection. If not provided, a new instance is created.
+
+    Returns:
+        A list of ``EmbeddedChunk`` instances, each containing the original
+        ``LoadedDocument`` and its 768-dimensional embedding vector.
+
+    Raises:
+        ValueError: If any embedding does not have exactly 768 dimensions.
+        IngestionError: If the input list is None.
+    """
+    if chunks is None:
+        raise IngestionError("Chunks list cannot be None")
+
+    if not chunks:
+        return []
+
+    service = embedding_service or EmbeddingService()
+
+    results: list[EmbeddedChunk] = []
+    for chunk in chunks:
+        embedding = await service.embed_document(chunk.content)
+
+        if len(embedding) != 768:
+            raise ValueError(
+                f"Expected 768-dimensional embedding for source_id={chunk.source_id} "
+                f"chunk_index={chunk.metadata.get('chunk_index')}, got {len(embedding)}"
+            )
+
+        results.append(EmbeddedChunk(document=chunk, embedding=embedding))
+
+    return results
