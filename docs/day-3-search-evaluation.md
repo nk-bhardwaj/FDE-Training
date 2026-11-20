@@ -52,3 +52,22 @@ Evaluate and compare the semantic search and keyword search implementations.
 - Queries where keyword search returned no results are treated as incorrect.
 - Semantic similarity and keyword rank are not compared numerically.
 
+### Real-World Query Comparison
+
+Query:
+"My product was disintegrated and I need my money back"
+
+Semantic Search:
+- Retrieved damaged_products and returns_refunds documents.
+- Top similarity: 0.7740.
+- Understood the relationship between product damage and refund intent.
+
+Keyword Search:
+- Retrieved documents from cancellations, exchanges,
+  customer_support, and order_tracking.
+- Returned less relevant results because it matched
+  individual terms rather than the overall intent.
+
+Observation:
+Semantic search handled unusual wording and contextual meaning
+better than PostgreSQL full-text keyword search in this example.
