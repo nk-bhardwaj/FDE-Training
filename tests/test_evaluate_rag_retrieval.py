@@ -4,12 +4,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.services.reranking_service import RAGRerankingService
 from scripts.evaluate_rag_retrieval import (
     EVALUATION_QUESTIONS,
     EvalQuestion,
     _calculate_metrics,
     _evaluate_strategy,
     _resolve_expected_chunks,
+    _run_reranked_strategy,
 )
 
 EVAL_CHUNK_SIZE = 300
@@ -532,3 +534,106 @@ class TestEvaluationQuestionEvidence:
 
         assert len(resolved) == len(EVALUATION_QUESTIONS)
         assert all(resolved), "every evaluation question must resolve to at least one chunk"
+
+
+class TestHybridRerankedStrategy:
+    """Tests for the hybrid + lexical reranking evaluation strategy."""
+
+    @staticmethod
+    def _fake_result(source_id: str, chunk_index: int):
+        return type(
+            "_Result",
+            (object,),
+            {"source_id": source_id, "chunk_index": chunk_index},
+        )()
+
+    @pytest.mark.asyncio
+    async def test_passes_hybrid_candidates_to_reranker(self):
+        """Hybrid retrieval runs unchanged, then its candidates are reranked."""
+        candidates = [
+            self._fake_result("doc1", 0),
+            self._fake_result("doc2", 1),
+            self._fake_result("doc3", 2),
+        ]
+        reranked = [candidates[1], candidates[0], candidates[2]]
+
+        rag_service = MagicMock()
+        rag_service.hybrid_search_chunks = AsyncMock(return_value=candidates)
+        reranker = MagicMock(spec=RAGRerankingService)
+        reranker.rerank.return_value = reranked
+
+        results = await _run_reranked_strategy(rag_service, reranker, "refund policy", 3)
+
+        rag_service.hybrid_search_chunks.assert_awaited_once_with(query="refund policy", limit=3)
+        reranker.rerank.assert_called_once_with("refund policy", candidates, top_k=3)
+        assert results == reranked
+
+    @pytest.mark.asyncio
+    async def test_uses_reranked_top_k_results_for_metrics(self):
+        """Metrics are computed from the reranked order, not the hybrid order."""
+        q1_relevant = self._fake_result("doc1", 0)
+        q2_relevant = self._fake_result("doc2", 0)
+        irrelevant_a = self._fake_result("doc9", 0)
+        irrelevant_b = self._fake_result("doc9", 1)
+
+        hybrid_candidates = [q1_relevant, q2_relevant, irrelevant_a, irrelevant_b]
+
+        rag_service = MagicMock()
+        rag_service.hybrid_search_chunks = AsyncMock(return_value=hybrid_candidates)
+        reranker = MagicMock(spec=RAGRerankingService)
+        reranker.rerank.side_effect = [
+            [irrelevant_a, q1_relevant, irrelevant_b],  # relevant at rank 2
+            [q2_relevant, irrelevant_a, irrelevant_b],  # relevant at rank 1
+        ]
+
+        questions = [
+            EvalQuestion(question="How do I issue a refund?", expected_evidence=("refund",)),
+            EvalQuestion(question="How long to return?", expected_evidence=("30 days",)),
+        ]
+        expected_chunks_list = [{("doc1", 0)}, {("doc2", 0)}]
+
+        async def method(query: str, limit: int):
+            return await _run_reranked_strategy(rag_service, reranker, query, limit)
+
+        metrics = await _evaluate_strategy(
+            "hybrid_reranked",
+            method,
+            questions,
+            expected_chunks_list,
+            3,
+        )
+
+        assert metrics.strategy_name == "hybrid_reranked"
+        assert metrics.mean_precision_at_k == pytest.approx(1.0 / 3)
+        assert metrics.mean_recall_at_k == pytest.approx(1.0)
+        assert metrics.mrr == pytest.approx((0.5 + 1.0) / 2)
+        assert metrics.mean_latency_ms is not None
+        assert metrics.mean_latency_ms >= 0
+        assert [qm.precision_at_k for qm in metrics.queries] == pytest.approx([1 / 3, 1 / 3])
+        assert reranker.rerank.call_count == 2
+        assert all(call.kwargs["top_k"] == 3 for call in reranker.rerank.call_args_list)
+
+    @pytest.mark.asyncio
+    async def test_handles_empty_hybrid_candidates(self):
+        """An empty hybrid result set yields zero metrics without errors."""
+        rag_service = MagicMock()
+        rag_service.hybrid_search_chunks = AsyncMock(return_value=[])
+        reranker = MagicMock(spec=RAGRerankingService)
+        reranker.rerank.return_value = []
+
+        async def method(query: str, limit: int):
+            return await _run_reranked_strategy(rag_service, reranker, query, limit)
+
+        metrics = await _evaluate_strategy(
+            "hybrid_reranked",
+            method,
+            [EvalQuestion(question="refund?", expected_evidence=("refund",))],
+            [{("doc1", 0)}],
+            3,
+        )
+
+        assert metrics.mean_precision_at_k == 0.0
+        assert metrics.mean_recall_at_k == 0.0
+        assert metrics.mrr == 0.0
+        assert metrics.queries[0].error is None
+        assert metrics.queries[0].retrieved_chunks == []
