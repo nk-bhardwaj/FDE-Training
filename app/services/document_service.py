@@ -1,4 +1,5 @@
 import os
+import re
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -23,6 +24,17 @@ load_dotenv()
 
 MAX_SEARCH_LIMIT = 100
 CONNECT_TIMEOUT_SECONDS = 10
+
+
+def _build_or_tsquery(query: str) -> str:
+    """Sanitize a user query into a PostgreSQL OR tsquery expression.
+
+    Tokens are alphanumeric sequences extracted from the input. Returns an
+    empty string when no valid tokens exist, so the caller can raise a ValueError.
+    """
+    tokens = re.findall(r"[A-Za-z0-9]+", query)
+    return " | ".join(tokens)
+
 
 _INSERT_SQL = """
     INSERT INTO documents (content, embedding, metadata)
@@ -231,16 +243,20 @@ class DocumentService:
         if limit > MAX_SEARCH_LIMIT:
             raise ValueError(f"Search limit must not exceed {MAX_SEARCH_LIMIT}")
 
-        params: dict[str, Any] = {"query": query, "limit": limit}
+        tsquery = _build_or_tsquery(query)
+        if not tsquery:
+            raise ValueError("Search query must contain at least one alphanumeric token")
+
+        params: dict[str, Any] = {"tsquery": tsquery, "limit": limit}
         sql = """
             SELECT
                 id,
                 content,
                 metadata,
                 created_at,
-                ts_rank(tsvector_content, websearch_to_tsquery('english', %(query)s)) AS rank
+                ts_rank(tsvector_content, to_tsquery('english', %(tsquery)s)) AS rank
             FROM documents
-            WHERE tsvector_content @@ websearch_to_tsquery('english', %(query)s)
+            WHERE tsvector_content @@ to_tsquery('english', %(tsquery)s)
         """
         if metadata_filters:
             sql += " AND metadata @> %(filters)s"
