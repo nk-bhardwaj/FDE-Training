@@ -146,8 +146,13 @@ async def _run_reranked_strategy(
     query: str,
     limit: int,
 ) -> list[ChunkSearchResult]:
-    """Run hybrid retrieval exactly as the baseline, then rerank its candidates."""
-    candidates = await rag_service.hybrid_search_chunks(query=query, limit=limit)
+    """Rerank a larger hybrid candidate pool down to ``limit`` results.
+
+    Hybrid retrieval is called with ``limit * 2`` so the reranker can promote
+    chunks that the baseline top-k would have discarded.
+    """
+    candidate_limit = limit * 2
+    candidates = await rag_service.hybrid_search_chunks(query=query, limit=candidate_limit)
     return reranker.rerank(query, candidates, top_k=limit)
 
 

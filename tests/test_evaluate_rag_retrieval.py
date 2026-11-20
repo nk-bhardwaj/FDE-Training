@@ -548,14 +548,10 @@ class TestHybridRerankedStrategy:
         )()
 
     @pytest.mark.asyncio
-    async def test_passes_hybrid_candidates_to_reranker(self):
-        """Hybrid retrieval runs unchanged, then its candidates are reranked."""
-        candidates = [
-            self._fake_result("doc1", 0),
-            self._fake_result("doc2", 1),
-            self._fake_result("doc3", 2),
-        ]
-        reranked = [candidates[1], candidates[0], candidates[2]]
+    async def test_requests_double_pool_and_passes_all_candidates_to_reranker(self):
+        """Hybrid is asked for top_k*2 and every candidate reaches the reranker."""
+        candidates = [self._fake_result(f"doc{index}", index) for index in range(6)]
+        reranked = [candidates[4], candidates[0], candidates[2]]
 
         rag_service = MagicMock()
         rag_service.hybrid_search_chunks = AsyncMock(return_value=candidates)
@@ -564,9 +560,31 @@ class TestHybridRerankedStrategy:
 
         results = await _run_reranked_strategy(rag_service, reranker, "refund policy", 3)
 
-        rag_service.hybrid_search_chunks.assert_awaited_once_with(query="refund policy", limit=3)
+        rag_service.hybrid_search_chunks.assert_awaited_once_with(query="refund policy", limit=6)
         reranker.rerank.assert_called_once_with("refund policy", candidates, top_k=3)
+        assert len(reranker.rerank.call_args.args[1]) == 6
         assert results == reranked
+        assert len(results) == 3
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("top_k", "expected_candidate_limit"), [(1, 2), (3, 6), (5, 10)])
+    async def test_candidate_pool_is_double_top_k(self, top_k, expected_candidate_limit):
+        """The candidate pool scales with the requested top-k."""
+        candidates = [self._fake_result("doc1", index) for index in range(top_k)]
+        reranked = candidates[:top_k]
+
+        rag_service = MagicMock()
+        rag_service.hybrid_search_chunks = AsyncMock(return_value=candidates)
+        reranker = MagicMock(spec=RAGRerankingService)
+        reranker.rerank.return_value = reranked
+
+        await _run_reranked_strategy(rag_service, reranker, "query", top_k)
+
+        rag_service.hybrid_search_chunks.assert_awaited_once_with(
+            query="query", limit=expected_candidate_limit
+        )
+        assert reranker.rerank.call_args.kwargs["top_k"] == top_k
+        assert reranker.rerank.call_args.args[1] is candidates
 
     @pytest.mark.asyncio
     async def test_uses_reranked_top_k_results_for_metrics(self):
@@ -576,7 +594,14 @@ class TestHybridRerankedStrategy:
         irrelevant_a = self._fake_result("doc9", 0)
         irrelevant_b = self._fake_result("doc9", 1)
 
-        hybrid_candidates = [q1_relevant, q2_relevant, irrelevant_a, irrelevant_b]
+        hybrid_candidates = [
+            q1_relevant,
+            q2_relevant,
+            irrelevant_a,
+            irrelevant_b,
+            self._fake_result("doc8", 0),
+            self._fake_result("doc8", 1),
+        ]
 
         rag_service = MagicMock()
         rag_service.hybrid_search_chunks = AsyncMock(return_value=hybrid_candidates)
@@ -612,6 +637,9 @@ class TestHybridRerankedStrategy:
         assert [qm.precision_at_k for qm in metrics.queries] == pytest.approx([1 / 3, 1 / 3])
         assert reranker.rerank.call_count == 2
         assert all(call.kwargs["top_k"] == 3 for call in reranker.rerank.call_args_list)
+        assert all(call.args[1] is hybrid_candidates for call in reranker.rerank.call_args_list)
+        assert rag_service.hybrid_search_chunks.await_args_list[0].kwargs["limit"] == 6
+        assert len(metrics.queries[0].retrieved_chunks) == 3
 
     @pytest.mark.asyncio
     async def test_handles_empty_hybrid_candidates(self):
@@ -637,3 +665,4 @@ class TestHybridRerankedStrategy:
         assert metrics.mrr == 0.0
         assert metrics.queries[0].error is None
         assert metrics.queries[0].retrieved_chunks == []
+        rag_service.hybrid_search_chunks.assert_awaited_once_with(query="refund?", limit=6)
