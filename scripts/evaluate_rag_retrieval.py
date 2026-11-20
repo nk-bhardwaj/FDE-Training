@@ -1,8 +1,9 @@
 """Evaluate RAG retrieval on the three Amazon policy documents.
 
-Runs semantic, keyword, and hybrid retrieval against the configured Neon
-database using real Gemini embeddings. Reports Precision@k, Recall@k,
-and MRR for each strategy with per-query results and latency.
+Runs semantic, keyword, hybrid, and hybrid+lexical-reranked retrieval against
+the configured Neon database using real Gemini embeddings. Reports
+Precision@k, Recall@k, and MRR for each strategy with per-query results and
+latency.
 
 Read-only: no inserts, updates, deletes or migrations.
 """
@@ -19,7 +20,8 @@ from dotenv import load_dotenv
 from app.core.logging import get_logger
 from app.services.embedding_service import EmbeddingService
 from app.services.ingestion_service import load_and_chunk
-from app.services.rag_retrieval_service import RAGRetrievalService
+from app.services.rag_retrieval_service import ChunkSearchResult, RAGRetrievalService
+from app.services.reranking_service import RAGRerankingService
 
 load_dotenv(Path(".env"))
 
@@ -136,6 +138,17 @@ async def _run_strategy(
             type(exc).__name__,
         )
         return [], None, f"{type(exc).__name__}: {exc}"
+
+
+async def _run_reranked_strategy(
+    rag_service: RAGRetrievalService,
+    reranker: RAGRerankingService,
+    query: str,
+    limit: int,
+) -> list[ChunkSearchResult]:
+    """Run hybrid retrieval exactly as the baseline, then rerank its candidates."""
+    candidates = await rag_service.hybrid_search_chunks(query=query, limit=limit)
+    return reranker.rerank(query, candidates, top_k=limit)
 
 
 def _calculate_metrics(
@@ -407,6 +420,10 @@ async def main() -> None:
     # Initialize services
     embedding_service = EmbeddingService()
     rag_service = RAGRetrievalService(embedding_service=embedding_service)
+    reranking_service = RAGRerankingService()
+
+    async def hybrid_reranked_search(query: str, limit: int) -> list[ChunkSearchResult]:
+        return await _run_reranked_strategy(rag_service, reranking_service, query, limit)
 
     # Load chunks using the selected configuration
     chunks = load_and_chunk(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
@@ -423,7 +440,7 @@ async def main() -> None:
     # Print chunking config and summary
     _print_chunking_config(chunk_size, chunk_overlap, top_k, source_ids, total_chunks)
 
-    # Evaluate all three strategies
+    # Evaluate all four strategies
     print(f"\nEvaluating {len(EVALUATION_QUESTIONS)} questions...\n")
 
     all_metrics: list[AggregateMetrics] = []
@@ -464,12 +481,26 @@ async def main() -> None:
     all_metrics.append(hybrid_metrics)
     print("Done.\n")
 
+    # Hybrid search + lexical reranking
+    print("Running hybrid_search_chunks + rerank...")
+    hybrid_reranked_metrics = await _evaluate_strategy(
+        "hybrid_reranked",
+        hybrid_reranked_search,
+        EVALUATION_QUESTIONS,
+        expected_chunks_list,
+        top_k,
+    )
+    all_metrics.append(hybrid_reranked_metrics)
+    print("Done.\n")
+
     # Print results
     _print_per_query_table(all_metrics[0])
     print()
     _print_per_query_table(all_metrics[1])
     print()
     _print_per_query_table(all_metrics[2])
+    print()
+    _print_per_query_table(all_metrics[3])
 
     _print_summary_table(all_metrics)
     _print_per_query_details(all_metrics)
