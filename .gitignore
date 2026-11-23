@@ -7,3 +7,5 @@ __pycache__/
 .coverage
 logs/
 node_modules
+.env
+.vscode/
