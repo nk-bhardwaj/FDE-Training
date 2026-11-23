@@ -34,6 +34,8 @@ class EvalQuestion:
 
     question: str
     expected_evidence: tuple[str, ...]  # phrases that should appear in relevant chunks
+    expected_sources: tuple[str, ...] | None = None  # source_ids where evidence may appear
+    expected_chunks: set[tuple[str, int]] | None = None  # explicit (source_id, chunk_index) pairs
 
 
 # 10 realistic questions derived from the three Amazon policy documents.
@@ -43,42 +45,91 @@ EVALUATION_QUESTIONS: list[EvalQuestion] = [
     EvalQuestion(
         question="How long does a customer have to return an item?",
         expected_evidence=("30 days", "45 days"),
+        expected_sources=("amazon_fba_return_policy",),
+        expected_chunks={
+            ("amazon_fba_return_policy", 0),
+            ("amazon_fba_return_policy", 1),
+        },
     ),
     EvalQuestion(
         question="What makes a returned unit unsellable?",
         expected_evidence=("unsellable", "defective", "damaged"),
+        expected_sources=("amazon_fba_return_policy",),
+        expected_chunks={
+            ("amazon_fba_return_policy", 0),
+            ("amazon_fba_return_policy", 1),
+        },
     ),
     EvalQuestion(
         question="When does Amazon reimburse sellers for returned items?",
         expected_evidence=("45 days", "reimbursement"),
+        expected_sources=("amazon_fba_return_policy",),
+        expected_chunks={
+            ("amazon_fba_return_policy", 0),
+            ("amazon_fba_return_policy", 1),
+            ("amazon_fba_return_policy", 2),
+        },
     ),
     EvalQuestion(
         question="How do I issue a refund to a customer?",
         expected_evidence=("refund", "full refund", "Select the Partial Refund tab"),
+        expected_sources=("amazon_fba_return_policy", "amazon_process_return_requests"),
+        expected_chunks={
+            ("amazon_fba_return_policy", 2),
+            ("amazon_fba_return_policy", 3),
+            ("amazon_process_return_requests", 1),
+        },
     ),
     EvalQuestion(
         question="What is an RMA number and when is it used?",
         expected_evidence=("RMA", "Return Merchandise Authorisation"),
+        expected_sources=("amazon_process_return_requests",),
+        expected_chunks={
+            ("amazon_process_return_requests", 0),
+        },
     ),
     EvalQuestion(
         question="How do I close a return request?",
         expected_evidence=("close", "return request"),
+        expected_sources=("amazon_process_return_requests",),
+        expected_chunks={
+            ("amazon_process_return_requests", 0),
+            ("amazon_process_return_requests", 1),
+        },
     ),
     EvalQuestion(
         question="How do I contact a buyer about a return?",
         expected_evidence=("Contact buyer", "email"),
+        expected_sources=("amazon_process_return_requests",),
+        expected_chunks={
+            ("amazon_process_return_requests", 0),
+            ("amazon_process_return_requests", 1),
+        },
     ),
     EvalQuestion(
         question="Are return labels prepaid for seller-fulfilled returns?",
         expected_evidence=("prepaid", "return label"),
+        expected_sources=("amazon_seller_fulfilled_returns",),
+        expected_chunks={
+            ("amazon_seller_fulfilled_returns", 0),
+        },
     ),
     EvalQuestion(
         question="How quickly must I respond to a return request?",
         expected_evidence=("24 hours", "respond"),
+        expected_sources=("amazon_seller_fulfilled_returns",),
+        expected_chunks={
+            ("amazon_seller_fulfilled_returns", 0),
+        },
     ),
     EvalQuestion(
         question="How are FBA order returns handled?",
         expected_evidence=("Fulfilment by Amazon", "FBA"),
+        expected_sources=("amazon_fba_return_policy",),
+        expected_chunks={
+            ("amazon_fba_return_policy", 0),
+            ("amazon_fba_return_policy", 1),
+        },
     ),
 ]
 
@@ -217,28 +268,37 @@ def _resolve_expected_chunks(
 ) -> list[set[tuple[str, int]]]:
     """Resolve evidence phrases to (source_id, chunk_index) at runtime.
 
-    After ``load_and_chunk()``, scans each chunk's content for the expected
-    evidence phrases.  If any phrase is not found in any chunk for a given
-    source_id, raises ``ValueError`` so the caller knows the configuration
-    does not produce the expected evidence.
-
-    Returns a list of ``set[tuple[str, int]]`` one per question, each
-    containing the (source_id, chunk_index) pairs that match the expected
-    evidence for that question.
+    Uses the explicit ``expected_chunks`` mapping on each ``EvalQuestion`` when
+    the loaded chunk set contains exactly those chunks (canonical 500/75 DB layout).
+    Otherwise falls back to phrase-resolution scoped to the question's
+    ``expected_sources`` so incidental matches in unrelated source documents are
+    never selected.
     """
     # Build a map: source_id -> list of (chunk_index, content)
     src_chunks: dict[str, list[tuple[int, str]]] = {}
+    chunk_ids: set[tuple[str, int]] = set()
     for chunk in chunks:
         chunk_index = chunk.metadata.get("chunk_index", 0) if chunk.metadata else 0
         src_chunks.setdefault(chunk.source_id, []).append((chunk_index, chunk.content))
+        chunk_ids.add((chunk.source_id, chunk_index))
 
     results: list[set[tuple[str, int]]] = []
     for q in questions:
+        # If the explicit ground-truth chunks are a subset of the loaded chunk set,
+        # use them directly (canonical 500/75 layout case).
+        if q.expected_chunks and q.expected_chunks.issubset(chunk_ids):
+            results.append(set(q.expected_chunks))
+            continue
+
+        # Fall back to phrase resolution, scoped to the question's valid sources
+        # so that incidental word matches in unrelated documents are ignored.
+        sources = q.expected_sources if q.expected_sources else None
         expected_chunks: set[tuple[str, int]] = set()
         for phrase in q.expected_evidence:
             found = False
-            for src_id, chunk_list in src_chunks.items():
-                for idx, content in chunk_list:
+            candidate_sources = sources if sources is not None else list(src_chunks.keys())
+            for src_id in candidate_sources:
+                for idx, content in src_chunks.get(src_id, []):
                     if phrase in content:
                         expected_chunks.add((src_id, idx))
                         found = True
@@ -249,9 +309,9 @@ def _resolve_expected_chunks(
                 raise ValueError(
                     f"Evaluation error: evidence phrase '{phrase!r}' not found in "
                     f"any chunk for question '{q.question}'.  This may be because "
-                    f"the chunk_size/chunk_overlap configuration changed the chunk "
-                    f"boundaries.  Consider adjusting the evidence phrases or "
-                    f"chunking parameters."
+                    f"the chunking configuration does not produce the expected evidence "
+                    f"in the scoped source documents.  Consider adjusting the evidence "
+                    f"phrases or the question's ``expected_sources``."
                 )
         results.append(expected_chunks)
     return results
