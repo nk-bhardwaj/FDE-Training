@@ -192,7 +192,7 @@ class TestRAGPipelineService:
     @pytest.fixture
     def mock_answer_service(self):
         svc = MagicMock(spec=RAGAnswerService)
-        svc.answer = MagicMock(return_value=_make_answer_response())
+        svc.answer = AsyncMock(return_value=_make_answer_response())
         return svc
 
     @pytest.fixture
@@ -285,7 +285,7 @@ class TestRAGPipelineService:
     ):
         """Empty retrieval leads to answer service abstention."""
         mock_retrieval_service.hybrid_search_chunks = AsyncMock(return_value=[])
-        mock_answer_service.answer = MagicMock(return_value=_make_answer_response(abstained=True))
+        mock_answer_service.answer = AsyncMock(return_value=_make_answer_response(abstained=True))
         result = await pipeline.run("Test question", "openai")
         assert result.answer.abstained is True
 
@@ -295,7 +295,7 @@ class TestRAGPipelineService:
     ):
         """Empty assembled context leads to answer service abstention."""
         mock_context_service.assemble = MagicMock(return_value=_make_assembled_context(chunks=[]))
-        mock_answer_service.answer = MagicMock(return_value=_make_answer_response(abstained=True))
+        mock_answer_service.answer = AsyncMock(return_value=_make_answer_response(abstained=True))
         result = await pipeline.run("Test question", "openai")
         assert result.answer.abstained is True
 
@@ -331,7 +331,7 @@ class TestRAGPipelineService:
     @pytest.mark.asyncio
     async def test_answer_error_wrapped(self, pipeline, mock_answer_service):
         """RAGAnswerError wrapped with step=answer."""
-        mock_answer_service.answer = MagicMock(
+        mock_answer_service.answer = AsyncMock(
             side_effect=RAGAnswerError("validation failed", status_code=502)
         )
         with pytest.raises(RAGPipelineError) as exc:
@@ -342,21 +342,21 @@ class TestRAGPipelineService:
     @pytest.mark.asyncio
     async def test_missing_api_key_error_propagated(self, pipeline, mock_answer_service):
         """MissingAPIKeyError propagates unchanged."""
-        mock_answer_service.answer = MagicMock(side_effect=MissingAPIKeyError("API key not found"))
+        mock_answer_service.answer = AsyncMock(side_effect=MissingAPIKeyError("API key not found"))
         with pytest.raises(MissingAPIKeyError):
             await pipeline.run("Test question", "openai")
 
     @pytest.mark.asyncio
     async def test_llm_timeout_error_propagated(self, pipeline, mock_answer_service):
         """LLMTimeoutError propagates unchanged."""
-        mock_answer_service.answer = MagicMock(side_effect=LLMTimeoutError("timeout"))
+        mock_answer_service.answer = AsyncMock(side_effect=LLMTimeoutError("timeout"))
         with pytest.raises(LLMTimeoutError):
             await pipeline.run("Test question", "openai")
 
     @pytest.mark.asyncio
     async def test_llm_provider_error_propagated(self, pipeline, mock_answer_service):
         """LLMProviderError propagates unchanged."""
-        mock_answer_service.answer = MagicMock(side_effect=LLMProviderError("rate limited"))
+        mock_answer_service.answer = AsyncMock(side_effect=LLMProviderError("rate limited"))
         with pytest.raises(LLMProviderError):
             await pipeline.run("Test question", "openai")
 
@@ -404,14 +404,14 @@ class TestRAGPipelineService:
             call_order.append("context")
             return _make_assembled_context()
 
-        def track_answer(*args, **kwargs):
+        async def track_answer(*args, **kwargs):
             call_order.append("answer")
             return _make_answer_response()
 
         mock_retrieval_service.hybrid_search_chunks = AsyncMock(side_effect=track_retrieval)
         mock_reranking_service.rerank = MagicMock(side_effect=track_rerank)
         mock_context_service.assemble = MagicMock(side_effect=track_context)
-        mock_answer_service.answer = MagicMock(side_effect=track_answer)
+        mock_answer_service.answer = AsyncMock(side_effect=track_answer)
 
         await pipeline.run("Test question", "openai")
         assert call_order == ["retrieval", "reranking", "context", "answer"]
@@ -431,7 +431,7 @@ class TestRAGPipelineService:
         mock_reranking_service.rerank = MagicMock(return_value=[raw_chunks[0]])
         context = _make_assembled_context(chunks=[raw_chunks[0]])
         mock_context_service.assemble = MagicMock(return_value=context)
-        mock_answer_service.answer = MagicMock(return_value=_make_answer_response())
+        mock_answer_service.answer = AsyncMock(return_value=_make_answer_response())
 
         result = await pipeline.run("Test question", "openai")
 
@@ -441,6 +441,28 @@ class TestRAGPipelineService:
         assert result.reranked_chunks == (raw_chunks[0],)
         assert result.raw_retrieval_chunks == tuple(raw_chunks)
         assert isinstance(result.config_used, RAGPipelineConfig)
+
+    @pytest.mark.asyncio
+    async def test_answer_service_awaited_and_response_processed(self, pipeline, mock_answer_service):
+        """Regression: run() awaits the async answer() and processes its result.
+
+        If ``answer`` were called without ``await``, ``answer_result`` would be
+        a coroutine and accessing ``answer_result.attempts`` would raise
+        AttributeError. Using an AsyncMock for the answer service verifies the
+        await is present and the returned RAGAnswerResponse is processed.
+        """
+        expected_answer = _make_answer_response(provider="groq")
+        mock_answer_service.answer = AsyncMock(return_value=expected_answer)
+
+        result = await pipeline.run("Test question", "groq")
+
+        mock_answer_service.answer.assert_awaited_once()
+        # The actual RAGAnswerResponse is returned and processed, not a coroutine
+        assert result.answer is expected_answer
+        assert result.answer.attempts == 1
+        assert result.answer.latency_ms == 100.0
+        assert result.answer.usage is not None
+        assert result.answer.usage.total_tokens == 150
 
 
 class TestRAGPipelineServiceDefaultConstruction:

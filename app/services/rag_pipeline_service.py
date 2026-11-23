@@ -287,7 +287,7 @@ class RAGPipelineService:
         # ---- Step 4: Answer generation -------------------------------------------------
         start_ms = time.perf_counter()
         try:
-            answer_result = self.answer_service.answer(
+            answer_result = await self.answer_service.answer(
                 provider=provider,
                 question=question,
                 context=assembled_context,
