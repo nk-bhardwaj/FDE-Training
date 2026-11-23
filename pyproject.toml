@@ -31,6 +31,8 @@ dependencies = [
     "google-genai>=3.6.1",
     "psycopg[binary]>=3.2,<4.0",
     "pgvector>=0.4,<1.0",
+    "tiktoken>=0.14.0",
+    "pyyaml>=6.0,<7.0",
 ]
 
 [project.scripts]
