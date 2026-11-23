@@ -547,11 +547,6 @@ class TestHybridRerankedStrategy:
             {"source_id": source_id, "chunk_index": chunk_index},
         )()
 
-    @pytest.mark.asyncio
-    async def test_requests_double_pool_and_passes_all_candidates_to_reranker(self):
-        """Hybrid is asked for top_k*2 and every candidate reaches the reranker."""
-        candidates = [self._fake_result(f"doc{index}", index) for index in range(6)]
-        reranked = [candidates[4], candidates[0], candidates[2]]
     async def test_requests_double_pool_and_passes_all_candidates_to_reranker(self):
         """Hybrid is asked for top_k*2 and every candidate reaches the reranker."""
         candidates = [self._fake_result(f"doc{index}", index) for index in range(6)]

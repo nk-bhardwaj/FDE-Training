@@ -443,7 +443,9 @@ class TestRAGPipelineService:
         assert isinstance(result.config_used, RAGPipelineConfig)
 
     @pytest.mark.asyncio
-    async def test_answer_service_awaited_and_response_processed(self, pipeline, mock_answer_service):
+    async def test_answer_service_awaited_and_response_processed(
+        self, pipeline, mock_answer_service
+    ):
         """Regression: run() awaits the async answer() and processes its result.
 
         If ``answer`` were called without ``await``, ``answer_result`` would be
