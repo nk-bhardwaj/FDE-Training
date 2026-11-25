@@ -1,0 +1,13 @@
+{
+  "input_row_count": 1067371,
+  "cleaned_row_count": 1067366,
+  "quarantined_row_count": 5,
+  "quarantine_reason_counts": {
+    "negative_price": 5
+  },
+  "duplicate_excess_rows_in_input": 34335,
+  "negative_quantity_count_cleaned": 22950,
+  "zero_price_count_cleaned": 6202,
+  "missing_customer_id_count_cleaned": 243002,
+  "missing_description_count_cleaned": 4382
+}
