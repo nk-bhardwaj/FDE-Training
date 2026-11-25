@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 import pandas as pd
 
@@ -28,6 +28,7 @@ CLEANED_PATH = CLEANED_DIR / "online_retail_II_cleaned.csv"
 
 QUARANTINED_DIR = REPO_ROOT / "pipeline" / "data" / "quarantined"
 QUARANTINED_PATH = QUARANTINED_DIR / "online_retail_II_quarantined.csv"
+DUPLICATES_PATH = QUARANTINED_DIR / "online_retail_II_duplicates.csv"
 
 PROFILE_DIR = REPO_ROOT / "pipeline" / "data" / "profiles"
 CLEANING_REPORT_PATH = PROFILE_DIR / "online_retail_II_cleaning_report.json"
@@ -48,6 +49,7 @@ EXPECTED_COLUMNS = [
 # Helper functions
 # ---------------------------------------------------------------------------
 
+
 def read_raw_csv(path: Path) -> pd.DataFrame:
     """Read the raw Online Retail II CSV without modifying the source file.
 
@@ -61,11 +63,10 @@ def read_raw_csv(path: Path) -> pd.DataFrame:
     pd.DataFrame
         DataFrame containing the raw data.
     """
-    df = pd.read_csv(path, dtype=str, keep_default_na=False, na_values=[""])
-    return df
+    return pd.read_csv(path, dtype=str, keep_default_na=False, na_values=[""])
 
 
-def validate_columns(df: pd.DataFrame, expected: List[str]) -> None:
+def validate_columns(df: pd.DataFrame, expected: list[str]) -> None:
     """Ensure the DataFrame contains exactly the expected eight columns.
 
     Parameters
@@ -139,11 +140,41 @@ def quarantine_negative_price(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFr
     return cleaned, quarantined
 
 
+def deduplicate_exact(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split *df* into unique and duplicate frames based on the 8 source columns.
+
+    Exact duplicates are detected using all 8 original source columns
+    (``EXPECTED_COLUMNS``), excluding the generated ``source_row_id``.
+    The first occurrence of each exact record is kept; subsequent occurrences
+    are moved to the duplicates frame. Both frames preserve ``source_row_id``.
+
+    Parameters
+    ----------
+    df: pd.DataFrame
+        Input DataFrame (must already have ``source_row_id``).
+
+    Returns
+    -------
+    unique: pd.DataFrame
+        First occurrence of each unique combination of source columns.
+    duplicates: pd.DataFrame
+        Subsequent exact duplicate occurrences.
+    """
+    # Detect exact duplicates on the 8 original source columns (no source_row_id)
+    dup_mask = df.duplicated(subset=EXPECTED_COLUMNS, keep="first")
+
+    unique = df[~dup_mask].copy()
+    duplicates = df[dup_mask].copy()
+
+    return unique, duplicates
+
+
 def compute_cleaning_report(
     input_df: pd.DataFrame,
     cleaned_df: pd.DataFrame,
     quarantined_df: pd.DataFrame,
-) -> Dict[str, Any]:
+    duplicates_df: pd.DataFrame | None = None,
+) -> dict[str, Any]:
     """Generate the JSON cleaning report.
 
     Parameters
@@ -151,28 +182,34 @@ def compute_cleaning_report(
     input_df: pd.DataFrame
         Original input DataFrame.
     cleaned_df: pd.DataFrame
-        Output DataFrame after applying cleaning rules.
+        Output DataFrame after applying cleaning rules (final cleaned rows).
     quarantined_df: pd.DataFrame
-        Output DataFrame after quarantine step.
+        Output DataFrame after quarantine step (negative-price rows).
+    duplicates_df: pd.DataFrame | None
+        DataFrame of exact duplicate rows removed during deduplication.
 
     Returns
     -------
     Dict[str, Any]
         Dictionary ready to be written as JSON.
     """
-    # Verify row conservation: input = cleaned + quarantined
     total_input = len(input_df)
     total_cleaned = len(cleaned_df)
     total_quarantined = len(quarantined_df)
+    total_duplicates = len(duplicates_df) if duplicates_df is not None else 0
+    total_unique_after_dedup = total_cleaned + total_quarantined
 
-    if total_input != total_cleaned + total_quarantined:
+    # Verify row conservation: input = cleaned + negative_price_quarantined + duplicates
+    if total_input != total_cleaned + total_quarantined + total_duplicates:
         raise RuntimeError(
             f"Row conservation failed: input={total_input}, "
-            f"cleaned={total_cleaned}, quarantined={total_quarantined}"
+            f"cleaned={total_cleaned}, "
+            f"quarantined={total_quarantined}, "
+            f"duplicates={total_duplicates}"
         )
 
     # Quarantine reason counts
-    quarantine_reasons: Dict[str, int] = {}
+    quarantine_reasons: dict[str, int] = {}
     if "rejection_reason" in quarantined_df.columns:
         quarantine_reasons = {
             reason: int(count)
@@ -188,15 +225,17 @@ def compute_cleaning_report(
     missing_customer_id_count = int(cleaned_df["Customer ID"].isna().sum())
     missing_description_count = int(cleaned_df["Description"].isna().sum())
 
-    # Input duplicate excess count using only the original dataset columns
-    excess_duplicate_rows = int(
-        input_df.duplicated(subset=EXPECTED_COLUMNS, keep="first").sum()
-    )
+    # Exact duplicate excess count using only the original dataset columns
+    excess_duplicate_rows = int(input_df.duplicated(subset=EXPECTED_COLUMNS, keep="first").sum())
 
-    report: Dict[str, Any] = {
+    report: dict[str, Any] = {
         "input_row_count": total_input,
         "cleaned_row_count": total_cleaned,
+        "final_cleaned_row_count": total_cleaned,
         "quarantined_row_count": total_quarantined,
+        "negative_price_quarantined_count": total_quarantined,
+        "duplicate_rows_removed": total_duplicates,
+        "unique_rows_after_dedup": total_unique_after_dedup,
         "quarantine_reason_counts": quarantine_reasons,
         "duplicate_excess_rows_in_input": excess_duplicate_rows,
         "negative_quantity_count_cleaned": neg_qty_count,
@@ -222,7 +261,7 @@ def write_csv(df: pd.DataFrame, path: Path) -> None:
     df.to_csv(path, index=False, encoding="utf-8")
 
 
-def write_json_report(report: Dict[str, Any], path: Path) -> None:
+def write_json_report(report: dict[str, Any], path: Path) -> None:
     """Write a JSON report to disk, creating the parent directory if needed.
 
     Parameters
@@ -241,14 +280,16 @@ def write_json_report(report: Dict[str, Any], path: Path) -> None:
 # Main orchestration
 # ---------------------------------------------------------------------------
 
+
 def run_cleaning() -> None:
     """Execute the full cleaning pipeline.
 
     1. Read raw CSV (no modification).
     2. Validate column structure.
     3. Assign stable ``source_row_id``.
-    4. Quarantine negative-price rows.
-    5. Write cleaned, quarantined, and the JSON report.
+    4. Quarantine negative-price records first.
+    5. Deduplicate exact records among the remaining non-negative-price records.
+    6. Write cleaned, quarantined, duplicates, and the JSON report.
 
     No target-schema conversions are performed here; that is left to
     ``transformer.py``.
@@ -258,8 +299,7 @@ def run_cleaning() -> None:
         df = read_raw_csv(RAW_CSV)
     except FileNotFoundError as exc:
         raise FileNotFoundError(
-            f"Raw CSV not found at {RAW_CSV}. "
-            "Place the file and re-run the cleaner."
+            f"Raw CSV not found at {RAW_CSV}. Place the file and re-run the cleaner."
         ) from exc
 
     # 2. Validate column structure
@@ -268,25 +308,31 @@ def run_cleaning() -> None:
     # 3. Assign stable source_row_id
     df = assign_source_row_ids(df)
 
-    # 4. Quarantine negative-price rows
-    cleaned, quarantined = quarantine_negative_price(df)
+    # 4. Quarantine negative-price records first
+    cleaned_pre_dedup, quarantined = quarantine_negative_price(df)
 
-    # 5. Write outputs
+    # 5. Deduplicate exact records among the remaining non-negative-price records
+    cleaned, duplicates = deduplicate_exact(cleaned_pre_dedup)
+
+    # 6. Write outputs
     write_csv(cleaned, CLEANED_PATH)
     write_csv(quarantined, QUARANTINED_PATH)
+    write_csv(duplicates, DUPLICATES_PATH)
 
-    # 5b. Generate and write cleaning report
-    report = compute_cleaning_report(df, cleaned, quarantined)
+    # 6b. Generate and write cleaning report
+    report = compute_cleaning_report(df, cleaned, quarantined, duplicates)
     write_json_report(report, CLEANING_REPORT_PATH)
 
     print(f"Cleaned output written to {CLEANED_PATH}")
     print(f"Quarantined output written to {QUARANTINED_PATH}")
+    print(f"Duplicates audit written to {DUPLICATES_PATH}")
     print(f"Cleaning report written to {CLEANING_REPORT_PATH}")
 
 
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     """Run the cleaner pipeline."""

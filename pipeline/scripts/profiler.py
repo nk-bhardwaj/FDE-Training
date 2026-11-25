@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 import pandas as pd
 
@@ -41,6 +41,7 @@ EXPECTED_COLUMNS = [
 # Helper functions
 # ---------------------------------------------------------------------------
 
+
 def read_raw_csv(path: Path) -> pd.DataFrame:
     """Read the raw Online Retail II CSV.
 
@@ -54,11 +55,10 @@ def read_raw_csv(path: Path) -> pd.DataFrame:
     pd.DataFrame
         DataFrame containing the raw data. The original CSV is never modified.
     """
-    df = pd.read_csv(path, dtype=str, keep_default_na=False, na_values=[""])
-    return df
+    return pd.read_csv(path, dtype=str, keep_default_na=False, na_values=[""])
 
 
-def validate_columns(df: pd.DataFrame, expected: List[str]) -> None:
+def validate_columns(df: pd.DataFrame, expected: list[str]) -> None:
     """Ensure the DataFrame contains exactly the expected columns.
 
     Parameters
@@ -83,7 +83,7 @@ def validate_columns(df: pd.DataFrame, expected: List[str]) -> None:
         raise ValueError(f"Unexpected extra columns: {extra}")
 
 
-def compute_profile(df: pd.DataFrame) -> Dict[str, Any]:
+def compute_profile(df: pd.DataFrame) -> dict[str, Any]:
     """Compute the full profiling statistics for the DataFrame.
 
     Parameters
@@ -103,7 +103,7 @@ def compute_profile(df: pd.DataFrame) -> Dict[str, Any]:
     missing_counts = df.isna().sum()
     missing_pct = (missing_counts / total_rows * 100).round(2)
 
-    missing_info: Dict[str, Dict[str, int | float]] = {}
+    missing_info: dict[str, dict[str, int | float]] = {}
     for col in df.columns:
         missing_info[col] = {
             "count": int(missing_counts[col]),
@@ -115,15 +115,10 @@ def compute_profile(df: pd.DataFrame) -> Dict[str, Any]:
     # 8 original CSV columns are identical.
     duplicate_mask = df.duplicated(keep="first")
     excess_duplicate_rows = int(duplicate_mask.sum())
-    duplicate_groups = int(
-        df.groupby(df.columns.tolist(), dropna=False)
-        .size()
-        .gt(1)
-        .sum()
-    )
+    duplicate_groups = int(df.groupby(df.columns.tolist(), dropna=False).size().gt(1).sum())
 
     # Unique counts per column
-    unique_counts: Dict[str, int] = {col: int(df[col].nunique()) for col in df.columns}
+    unique_counts: dict[str, int] = {col: int(df[col].nunique()) for col in df.columns}
 
     # InvoiceDate min / max
     # InvoiceDate may contain a timestamp; parse it safely.
@@ -154,12 +149,12 @@ def compute_profile(df: pd.DataFrame) -> Dict[str, Any]:
     # Prefixes are the leading character(s) of the Invoice field.
     # We normalise to string and take the first character if present.
     invoice_col = df["Invoice"].astype(str)
-    prefix_counts: Dict[str, int] = {}
+    prefix_counts: dict[str, int] = {}
     for prefix in ("5", "4", "C", "A"):
         count = int((invoice_col.str.startswith(prefix)).sum())
         prefix_counts[prefix] = count
 
-    profile: Dict[str, Any] = {
+    profile: dict[str, Any] = {
         "total_rows": total_rows,
         "total_columns": total_cols,
         "missing_values": missing_info,
@@ -186,7 +181,7 @@ def compute_profile(df: pd.DataFrame) -> Dict[str, Any]:
     return profile
 
 
-def save_profile(profile: Dict[str, Any], path: Path) -> None:
+def save_profile(profile: dict[str, Any], path: Path) -> None:
     """Write the profiling JSON to disk.
 
     Parameters
@@ -204,6 +199,7 @@ def save_profile(profile: Dict[str, Any], path: Path) -> None:
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     """Run the profiler and write the profile JSON."""

@@ -1,13 +1,17 @@
 {
   "input_row_count": 1067371,
-  "cleaned_row_count": 1067366,
+  "cleaned_row_count": 1033031,
+  "final_cleaned_row_count": 1033031,
   "quarantined_row_count": 5,
+  "negative_price_quarantined_count": 5,
+  "duplicate_rows_removed": 34335,
+  "unique_rows_after_dedup": 1033036,
   "quarantine_reason_counts": {
     "negative_price": 5
   },
   "duplicate_excess_rows_in_input": 34335,
-  "negative_quantity_count_cleaned": 22950,
-  "zero_price_count_cleaned": 6202,
-  "missing_customer_id_count_cleaned": 243002,
-  "missing_description_count_cleaned": 4382
+  "negative_quantity_count_cleaned": 22496,
+  "zero_price_count_cleaned": 6014,
+  "missing_customer_id_count_cleaned": 235146,
+  "missing_description_count_cleaned": 4275
 }

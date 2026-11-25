@@ -118,9 +118,33 @@ class TestSuccessfulTransformation:
     def test_invoice_rows_preserved_no_aggregation(self):
         """Multiple rows sharing the same invoice are preserved, not aggregated."""
         rows = [
-            _valid_row({"Invoice": "INV-1", "StockCode": "A", "Quantity": "3", "Price": "2.00", "source_row_id": "1"}),
-            _valid_row({"Invoice": "INV-1", "StockCode": "B", "Quantity": "1", "Price": "5.50", "source_row_id": "2"}),
-            _valid_row({"Invoice": "INV-2", "StockCode": "A", "Quantity": "2", "Price": "2.00", "source_row_id": "3"}),
+            _valid_row(
+                {
+                    "Invoice": "INV-1",
+                    "StockCode": "A",
+                    "Quantity": "3",
+                    "Price": "2.00",
+                    "source_row_id": "1",
+                }
+            ),
+            _valid_row(
+                {
+                    "Invoice": "INV-1",
+                    "StockCode": "B",
+                    "Quantity": "1",
+                    "Price": "5.50",
+                    "source_row_id": "2",
+                }
+            ),
+            _valid_row(
+                {
+                    "Invoice": "INV-2",
+                    "StockCode": "A",
+                    "Quantity": "2",
+                    "Price": "2.00",
+                    "source_row_id": "3",
+                }
+            ),
         ]
         records = []
         for r in rows:
@@ -269,9 +293,9 @@ class TestNumericValidation:
             ("0", True),
             ("0.0000", True),
             ("6.95", True),
-            ("99999999.9999", True),   # 8 integer digits + 4 decimals = 12 total
-            ("123456789.99", False),   # 9 integer digits > 8
-            ("0.00001", False),        # scale 5 > 4
+            ("99999999.9999", True),  # 8 integer digits + 4 decimals = 12 total
+            ("123456789.99", False),  # 9 integer digits > 8
+            ("0.00001", False),  # scale 5 > 4
         ],
     )
     def test_price_numeric12_4_boundaries(self, price_str, fits):
@@ -394,7 +418,7 @@ class TestSourceRowIDValidation:
         validate_source_row_id_unique(df)  # should not raise
         # row-level validation rejects them individually
         for junk in ["abc", "1.5", ""]:
-            record, reason = transform_row(_valid_row({"source_row_id": junk}))
+            _record, reason = transform_row(_valid_row({"source_row_id": junk}))
             assert reason == "invalid_source_row_id"
 
 
@@ -422,18 +446,50 @@ class TestDatasetValidation:
         """Input rows == transformed rows + rejected rows (mixed valid/invalid)."""
         csv_file = tmp_path / "cleaned_test.csv"
         rows = [
-            {"Invoice": "INV-1", "StockCode": "A", "Description": "Prod A", "Quantity": "3",
-             "InvoiceDate": "2009-12-01 07:45:00", "Price": "2.00", "Customer ID": "C1",
-             "Country": "US", "source_row_id": "1"},  # valid
-            {"Invoice": "INV-2", "StockCode": "B", "Description": "", "Quantity": "5",
-             "InvoiceDate": "2009-12-01 08:00:00", "Price": "5.00", "Customer ID": "C2",
-             "Country": "US", "source_row_id": "2"},  # missing Quantity? no, quantity present -> valid (desc null ok)
-            {"Invoice": "INV-3", "StockCode": "C", "Description": "Prod C", "Quantity": "1",
-             "InvoiceDate": "invalid-date", "Price": "1.00", "Customer ID": "C3",
-             "Country": "US", "source_row_id": "3"},  # invalid timestamp -> rejected
-            {"Invoice": "", "StockCode": "D", "Description": "Prod D", "Quantity": "1",
-             "InvoiceDate": "2009-12-01 09:00:00", "Price": "1.00", "Customer ID": "C4",
-             "Country": "US", "source_row_id": "4"},  # missing Invoice -> rejected
+            {
+                "Invoice": "INV-1",
+                "StockCode": "A",
+                "Description": "Prod A",
+                "Quantity": "3",
+                "InvoiceDate": "2009-12-01 07:45:00",
+                "Price": "2.00",
+                "Customer ID": "C1",
+                "Country": "US",
+                "source_row_id": "1",
+            },  # valid
+            {
+                "Invoice": "INV-2",
+                "StockCode": "B",
+                "Description": "",
+                "Quantity": "5",
+                "InvoiceDate": "2009-12-01 08:00:00",
+                "Price": "5.00",
+                "Customer ID": "C2",
+                "Country": "US",
+                "source_row_id": "2",
+            },  # missing Quantity? no, quantity present -> valid (desc null ok)
+            {
+                "Invoice": "INV-3",
+                "StockCode": "C",
+                "Description": "Prod C",
+                "Quantity": "1",
+                "InvoiceDate": "invalid-date",
+                "Price": "1.00",
+                "Customer ID": "C3",
+                "Country": "US",
+                "source_row_id": "3",
+            },  # invalid timestamp -> rejected
+            {
+                "Invoice": "",
+                "StockCode": "D",
+                "Description": "Prod D",
+                "Quantity": "1",
+                "InvoiceDate": "2009-12-01 09:00:00",
+                "Price": "1.00",
+                "Customer ID": "C4",
+                "Country": "US",
+                "source_row_id": "4",
+            },  # missing Invoice -> rejected
         ]
         _write_cleaned_csv(csv_file, rows)
 
@@ -448,24 +504,42 @@ class TestDatasetValidation:
 
         transformer.run_transformation()
 
-        transformed_df = pd.read_csv(transformed_path, dtype=str, keep_default_na=False, na_values=[""])
+        transformed_df = pd.read_csv(
+            transformed_path, dtype=str, keep_default_na=False, na_values=[""]
+        )
         rejected_df = pd.read_csv(rejected_path, dtype=str, keep_default_na=False, na_values=[""])
 
         input_count = len(rows)
         assert len(transformed_df) + len(rejected_df) == input_count
         assert len(transformed_df) == 2  # INV-1, INV-2 valid
-        assert len(rejected_df) == 2   # INV-3, INV-4 rejected
+        assert len(rejected_df) == 2  # INV-3, INV-4 rejected
 
     def test_row_conservation_all_valid(self, tmp_path, monkeypatch):
         """All-valid rows: input == transformed, rejected is empty."""
         csv_file = tmp_path / "cleaned_ok.csv"
         rows = [
-            {"Invoice": "INV-1", "StockCode": "A", "Description": "Prod A", "Quantity": "2",
-             "InvoiceDate": "2009-12-01 07:45:00", "Price": "10.00", "Customer ID": "C1",
-             "Country": "US", "source_row_id": "1"},
-            {"Invoice": "INV-2", "StockCode": "B", "Description": "Prod B", "Quantity": "1",
-             "InvoiceDate": "2009-12-01 08:00:00", "Price": "5.00", "Customer ID": "C2",
-             "Country": "US", "source_row_id": "2"},
+            {
+                "Invoice": "INV-1",
+                "StockCode": "A",
+                "Description": "Prod A",
+                "Quantity": "2",
+                "InvoiceDate": "2009-12-01 07:45:00",
+                "Price": "10.00",
+                "Customer ID": "C1",
+                "Country": "US",
+                "source_row_id": "1",
+            },
+            {
+                "Invoice": "INV-2",
+                "StockCode": "B",
+                "Description": "Prod B",
+                "Quantity": "1",
+                "InvoiceDate": "2009-12-01 08:00:00",
+                "Price": "5.00",
+                "Customer ID": "C2",
+                "Country": "US",
+                "source_row_id": "2",
+            },
         ]
         _write_cleaned_csv(csv_file, rows)
 
@@ -480,7 +554,9 @@ class TestDatasetValidation:
 
         transformer.run_transformation()
 
-        transformed_df = pd.read_csv(transformed_path, dtype=str, keep_default_na=False, na_values=[""])
+        transformed_df = pd.read_csv(
+            transformed_path, dtype=str, keep_default_na=False, na_values=[""]
+        )
         rejected_df = pd.read_csv(rejected_path, dtype=str, keep_default_na=False, na_values=[""])
 
         assert len(transformed_df) == 2

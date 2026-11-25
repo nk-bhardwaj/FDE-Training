@@ -1,0 +1,10 @@
+{
+  "input_row_count": 1033031,
+  "transformed_row_count": 1033031,
+  "rejected_row_count": 0,
+  "rejection_reason_counts": {},
+  "negative_quantity_count": 22496,
+  "zero_price_count": 6014,
+  "missing_customer_id_count": 235146,
+  "missing_description_count": 4275
+}

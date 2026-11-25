@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import pandas as pd
 
@@ -38,7 +38,9 @@ TRANSFORMED_PATH = REPO_ROOT / "pipeline" / "data" / "cleaned" / "online_retail_
 
 REJECTED_PATH = REPO_ROOT / "pipeline" / "data" / "rejected" / "online_retail_II_rejected.csv"
 
-REPORT_PATH = REPO_ROOT / "pipeline" / "data" / "profiles" / "online_retail_II_transformation_report.json"
+REPORT_PATH = (
+    REPO_ROOT / "pipeline" / "data" / "profiles" / "online_retail_II_transformation_report.json"
+)
 
 # ---------------------------------------------------------------------------
 # Column definitions (from schema-design.md Section 2)
@@ -94,6 +96,7 @@ LINE_TOTAL_SCALE = 4
 # Low-level parsing helpers
 # ---------------------------------------------------------------------------
 
+
 def _is_missing(value: Any) -> bool:
     """Return True if *value* is None, NaN/NA, or an empty/whitespace string."""
     if value is None:
@@ -106,7 +109,7 @@ def _is_missing(value: Any) -> bool:
         return False
 
 
-def _trim(value: Any) -> Optional[str]:
+def _trim(value: Any) -> str | None:
     """Trim leading/trailing whitespace; return None for missing values."""
     if _is_missing(value):
         return None
@@ -134,9 +137,7 @@ def _fits_numeric(value: Decimal, precision: int, scale: int) -> bool:
     if quantized != value:
         return False
     integer_digits = precision - scale
-    if quantized != 0 and quantized.adjusted() + 1 > integer_digits:
-        return False
-    return True
+    return quantized == 0 or quantized.adjusted() + 1 <= integer_digits
 
 
 def _parse_source_row_id(value: Any) -> int:
@@ -194,7 +195,7 @@ def _parse_price(value: Any) -> Decimal:
     return dec
 
 
-def _parse_timestamp(value: Any) -> Tuple[Optional[pd.Timestamp], Optional[str]]:
+def _parse_timestamp(value: Any) -> tuple[pd.Timestamp | None, str | None]:
     """Parse *value* into a timezone-naive Timestamp.
 
     Returns
@@ -216,7 +217,8 @@ def _parse_timestamp(value: Any) -> Tuple[Optional[pd.Timestamp], Optional[str]]
 # Row-level transformation
 # ---------------------------------------------------------------------------
 
-def transform_row(row: pd.Series) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+
+def transform_row(row: pd.Series) -> tuple[dict[str, Any] | None, str | None]:
     """Transform a single input row.
 
     Parameters
@@ -280,7 +282,7 @@ def transform_row(row: pd.Series) -> Tuple[Optional[Dict[str, Any]], Optional[st
     if not _fits_numeric(line_total, LINE_TOTAL_PRECISION, LINE_TOTAL_SCALE):
         return None, "line_total_out_of_range"
 
-    record: Dict[str, Any] = {
+    record: dict[str, Any] = {
         "source_row_id": source_row_id,
         "invoice": invoice,
         "stock_code": stock_code,
@@ -301,12 +303,13 @@ def transform_row(row: pd.Series) -> Tuple[Optional[Dict[str, Any]], Optional[st
 # I/O helpers
 # ---------------------------------------------------------------------------
 
+
 def read_cleaned_csv(path: Path) -> pd.DataFrame:
     """Read the cleaned CSV without modifying the source file."""
     return pd.read_csv(path, dtype=str, keep_default_na=False, na_values=[""])
 
 
-def validate_input_columns(df: pd.DataFrame, expected: List[str]) -> None:
+def validate_input_columns(df: pd.DataFrame, expected: list[str]) -> None:
     """Ensure the DataFrame contains exactly the expected input columns."""
     missing = [c for c in expected if c not in df.columns]
     extra = [c for c in df.columns if c not in expected]
@@ -347,9 +350,7 @@ def validate_source_row_id_unique(df: pd.DataFrame) -> None:
             seen.add(normalised)
     if dupes:
         duplicates = sorted(dupes)
-        raise RuntimeError(
-            f"Duplicate source_row_id values in input dataset: {duplicates[:10]}"
-        )
+        raise RuntimeError(f"Duplicate source_row_id values in input dataset: {duplicates[:10]}")
 
 
 def write_csv(df: pd.DataFrame, path: Path) -> None:
@@ -358,7 +359,7 @@ def write_csv(df: pd.DataFrame, path: Path) -> None:
     df.to_csv(path, index=False, encoding="utf-8")
 
 
-def write_json_report(report: Dict[str, Any], path: Path) -> None:
+def write_json_report(report: dict[str, Any], path: Path) -> None:
     """Write a JSON report to disk, creating the parent directory if needed."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
@@ -369,14 +370,15 @@ def write_json_report(report: Dict[str, Any], path: Path) -> None:
 # Report
 # ---------------------------------------------------------------------------
 
+
 def compute_report(
     input_df: pd.DataFrame,
     transformed_df: pd.DataFrame,
     rejected_df: pd.DataFrame,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Build the transformation report dictionary."""
     # Rejection reason counts
-    rejection_reasons: Dict[str, int] = {}
+    rejection_reasons: dict[str, int] = {}
     if "rejection_reason" in rejected_df.columns and not rejected_df.empty:
         rejection_reasons = {
             reason: int(count)
@@ -413,6 +415,7 @@ def compute_report(
 # Orchestration
 # ---------------------------------------------------------------------------
 
+
 def run_transformation() -> None:
     """Execute the full transformation pipeline."""
     # 1. Read cleaned CSV
@@ -428,8 +431,8 @@ def run_transformation() -> None:
     validate_source_row_id_unique(df)
 
     # 3. Transform row by row
-    transformed_records: List[Dict[str, Any]] = []
-    rejected_records: List[Dict[str, Any]] = []
+    transformed_records: list[dict[str, Any]] = []
+    rejected_records: list[dict[str, Any]] = []
     for _, row in df.iterrows():
         record, reason = transform_row(row)
         if reason is not None:
@@ -440,7 +443,7 @@ def run_transformation() -> None:
             transformed_records.append(record)  # type: ignore[arg-type]
 
     transformed_df = pd.DataFrame(transformed_records, columns=TRANSFORMED_COLUMNS)
-    rejected_columns = EXPECTED_INPUT_COLUMNS + ["rejection_reason"]
+    rejected_columns = [*EXPECTED_INPUT_COLUMNS, "rejection_reason"]
     rejected_df = pd.DataFrame(rejected_records, columns=rejected_columns)
 
     # 4. Ensure source_row_id is unique in transformed output
@@ -470,6 +473,7 @@ def run_transformation() -> None:
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     """Run the transformer pipeline."""
