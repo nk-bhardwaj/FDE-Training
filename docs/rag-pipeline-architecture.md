@@ -720,8 +720,7 @@ class RAGPipelineService:
         context_service: ContextEngineeringService | None = None,
         answer_service: RAGAnswerService | None = None,
         config: RAGPipelineConfig | None = None,
-    ):
-        ...
+    ): ...
 ```
 
 ### Dependency Injection

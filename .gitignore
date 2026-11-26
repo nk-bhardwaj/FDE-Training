@@ -9,3 +9,8 @@ logs/
 node_modules
 .env
 .vscode/
+
+# Generated dataset files
+pipeline/data/raw/*.csv
+pipeline/data/cleaned/*.csv
+pipeline/data/quarantined/*.csv
