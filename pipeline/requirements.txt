@@ -1,0 +1,5 @@
+# Runtime dependencies for pipeline/scripts only.
+# Versions match the project lockfile (uv.lock).
+pandas==3.1.1
+psycopg[binary]==3.3.9
+python-dotenv==1.2.4

@@ -212,5 +212,31 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
+  # ---------------------------------------------------------------------
+  # Standalone one-shot data pipeline. Opt-in via the "pipeline" profile so
+  # it never starts with the Airflow stack.
+  #
+  #   docker compose -f airflow/docker-compose.yaml build pipeline
+  #   docker compose -f airflow/docker-compose.yaml run --rm pipeline
+  #
+  # Uses its own image (pipeline/Dockerfile), not the Airflow image, and does
+  # not depend on the Airflow metadata database.
+  # ---------------------------------------------------------------------
+  pipeline:
+    profiles:
+      - pipeline
+    build:
+      context: ../pipeline
+      dockerfile: Dockerfile
+    image: fde-pipeline:3.13
+    user: "${PIPELINE_UID:-50000}:${PIPELINE_GID:-50000}"
+    volumes:
+      # loader.py resolves REPO_ROOT to /app and reads /app/.env.
+      - ../.env:/app/.env:ro
+      # Datasets and reports remain on the host.
+      - ../pipeline/data:/app/pipeline/data:rw
+    working_dir: /app
+    restart: "no"
+
 volumes:
   postgres-db-volume:
