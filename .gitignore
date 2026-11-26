@@ -14,3 +14,7 @@ node_modules
 pipeline/data/raw/*.csv
 pipeline/data/cleaned/*.csv
 pipeline/data/quarantined/*.csv
+
+airflow/logs/
+airflow/config/
+airflow/.env

@@ -1,0 +1,216 @@
+# Apache Airflow 3.4.0 — local development stack for the FDE AI Sprint pipeline.
+#
+# This file is intentionally local-development oriented:
+#   * LocalExecutor: the scheduler runs tasks directly, so no Redis or Celery worker.
+#   * A dedicated PostgreSQL container stores Airflow metadata. The Neon warehouse
+#     database is never used for Airflow metadata.
+#   * SimpleAuthManager (the Airflow 3 default) provisions users from configuration
+#     instead of the FAB provider, which is not installed in the custom image.
+#
+# The image is the project's pre-built custom image. `build` is included so the
+# image can be rebuilt from airflow/Dockerfile when needed.
+#
+# Optional Compose-time overrides belong in airflow/.env (git-ignored). That file
+# is used ONLY for ${VARIABLE} substitution by Compose; it is not injected into
+# containers as an env_file. The project root .env is never used as an Airflow
+# env_file: it is reachable only through the /opt/airflow/project mount, where
+# pipeline/scripts/loader.py reads it explicitly at runtime.
+#
+# Do not use this configuration in production.
+
+name: fde-airflow
+
+x-airflow-common:
+  &airflow-common
+  image: fde-airflow:3.4.0
+  build:
+    context: .
+    dockerfile: Dockerfile
+  environment:
+    &airflow-common-env
+    # --- Executor and Airflow 3 API wiring -------------------------------
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:-local-dev-only-jwt-secret-change-me}
+    AIRFLOW__API_AUTH__JWT_ISSUER: ${AIRFLOW_JWT_ISSUER:-airflow}
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW_API_SECRET_KEY:-local-dev-only-api-secret-change-me}
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+
+    # --- Metadata database (separate from Neon) --------------------------
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg://${AIRFLOW_DB_USER:-airflow}:${AIRFLOW_DB_PASSWORD:-airflow}@postgres:5432/${AIRFLOW_DB_NAME:-airflow}
+
+    # --- Local auth: SimpleAuthManager (Airflow 3 default) ---------------
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.api_fastapi.auth.managers.simple.simple_auth_manager.SimpleAuthManager
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: ${AIRFLOW_SIMPLE_AUTH_USERS:-airflow:admin}
+    # Generated passwords persist in the host ./config directory so they survive
+    # container recreation. The file is plaintext and dev-only.
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/config/simple_auth_manager_passwords.json
+
+    # --- Paths -----------------------------------------------------------
+    AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    # Makes pipeline scripts importable from DAGs without extra sys.path code.
+    PYTHONPATH: /opt/airflow/project:/opt/airflow/project/pipeline/scripts
+
+    # --- Encryption ------------------------------------------------------
+    # Leave empty for a throwaway local stack, or generate a key and set
+    # FERNET_KEY in airflow/.env:
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    AIRFLOW__CORE__FERNET_KEY: ${FERNET_KEY:-}
+
+  volumes:
+    # Actual DAG source directory (there is no second DAG directory).
+    - ../pipeline/dags:/opt/airflow/dags
+    # Project root: pipeline scripts, data, migrations, docs, and the root .env
+    # that pipeline/scripts/loader.py loads at runtime.
+    - ..:/opt/airflow/project
+    # Task and scheduler logs on the host.
+    - ./logs:/opt/airflow/logs
+    # Airflow plugins and the generated SimpleAuthManager password file.
+    - ./plugins:/opt/airflow/plugins
+    - ./config:/opt/airflow/config
+
+  # Airflow's image runs as UID 50000. On Windows Docker Desktop the UID is not
+  # meaningful; on Linux set AIRFLOW_UID to your host UID in airflow/.env.
+  user: "${AIRFLOW_UID:-50000}:0"
+
+services:
+  # ---------------------------------------------------------------------
+  # Airflow metadata database. Local-only; no port is published.
+  # ---------------------------------------------------------------------
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${AIRFLOW_DB_USER:-airflow}
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:-airflow}
+      POSTGRES_DB: ${AIRFLOW_DB_NAME:-airflow}
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${AIRFLOW_DB_USER:-airflow} -d ${AIRFLOW_DB_NAME:-airflow}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: always
+
+  # ---------------------------------------------------------------------
+  # One-shot initialization: applies Airflow metadata migrations, then exits.
+  # The configured SimpleAuthManager user is provisioned by the API server
+  # from AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS (no DB user row is needed).
+  # ---------------------------------------------------------------------
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        set -euo pipefail
+        echo "Applying Airflow metadata database migrations..."
+        airflow db migrate
+        airflow db check
+        echo "Airflow metadata database is ready."
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------
+  # Airflow 3 API server (replaces the Airflow 2 webserver).
+  # ---------------------------------------------------------------------
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      # Bind to localhost only; this is a local development UI.
+      - "127.0.0.1:${AIRFLOW_API_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ---------------------------------------------------------------------
+  # Scheduler. With LocalExecutor it also runs task instances locally.
+  # ---------------------------------------------------------------------
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+      airflow-apiserver:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------
+  # DAG processor. Airflow 3 parses DAG files here, not in the scheduler.
+  # ---------------------------------------------------------------------
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+      airflow-apiserver:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------
+  # Optional debugging shell. Start explicitly with:
+  #   docker compose -f airflow/docker-compose.yaml --profile debug run --rm airflow-cli "airflow dags list"
+  # ---------------------------------------------------------------------
+  airflow-cli:
+    <<: *airflow-common
+    profiles:
+      - debug
+    entrypoint: ["/bin/bash", "-c"]
+    command: ["airflow version"]
+    environment:
+      <<: *airflow-common-env
+      CONNECTION_CHECK_MAX_COUNT: "0"
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-db-volume:
