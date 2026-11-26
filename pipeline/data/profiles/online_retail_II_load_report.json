@@ -1,0 +1,16 @@
+{
+  "report_version": "1.0",
+  "started_at": "2026-11-25T20:01:34.573305+00:00",
+  "finished_at": "2026-11-25T20:13:39.639286+00:00",
+  "input_path": "C:\\Users\\Nishchay\\Desktop\\fde-ai-sprint\\pipeline\\data\\cleaned\\online_retail_II_transformed.csv",
+  "report_path": "C:\\Users\\Nishchay\\Desktop\\fde-ai-sprint\\pipeline\\data\\profiles\\online_retail_II_load_report.json",
+  "table": "warehouse.cleaned_online_retail_ii",
+  "input_rows": 1033031,
+  "staged_rows": 1033031,
+  "inserted_rows": 1033021,
+  "updated_rows": 10,
+  "final_rows": 1033031,
+  "duration_seconds": 725.066,
+  "status": "success",
+  "row_count_matches": true
+}
