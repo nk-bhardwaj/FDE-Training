@@ -1,6 +1,7 @@
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from app.services.openai_service import OpenAIService
@@ -197,7 +198,14 @@ async def test_openai_tool_calling_provider_error(monkeypatch):
     with patch("app.services.openai_service.AsyncOpenAI") as mock_cls:
         mock_client = MagicMock()
         mock_client.chat.completions.create = AsyncMock(
-            side_effect=APIError("provider error", request=None, body=None)
+            side_effect=APIError(
+    "provider error",
+    request=httpx.Request(
+        "POST",
+        "https://api.openai.com/v1/chat/completions",
+    ),
+    body=None,
+)
         )
         mock_cls.return_value = mock_client
 
